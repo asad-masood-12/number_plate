@@ -74,6 +74,22 @@ st.markdown("""
 st.markdown('<h1 class="main-header">🚘 Smart Number Plate Detection System</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Upload an image or video to detect number plates with AI-powered recognition & time tracking</p>', unsafe_allow_html=True)
 
+# === Initialize Session State ===
+if 'current_session_plates' not in st.session_state:
+    st.session_state.current_session_plates = []
+if 'session_stats' not in st.session_state:
+    st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
+if 'file_processed' not in st.session_state:
+    st.session_state.file_processed = False
+if 'last_uploaded_file' not in st.session_state:
+    st.session_state.last_uploaded_file = None
+if 'processed_image' not in st.session_state:
+    st.session_state.processed_image = None
+if 'original_image' not in st.session_state:
+    st.session_state.original_image = None
+if 'processed_video_path' not in st.session_state:
+    st.session_state.processed_video_path = None
+
 # === Sidebar Configuration ===
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -82,11 +98,9 @@ with st.sidebar:
     st.markdown("---")
     st.header("📊 Session Stats")
     
-    # Initialize session state for current session results
-    if 'current_session_plates' not in st.session_state:
-        st.session_state.current_session_plates = []
-    if 'session_stats' not in st.session_state:
-        st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
+    # Display current session stats
+    st.metric("Total Detections", st.session_state.session_stats['total_detections'])
+    st.metric("Unique Plates", st.session_state.session_stats['unique_plates'])
 
 # === MongoDB Setup ===
 @st.cache_resource
@@ -223,7 +237,8 @@ def save_plate_to_db(plate_number):
                 "detection_count": detection_count + 1,
                 "in_times": in_times,
                 "out_times": out_times,
-                "last_detection_time": now
+                "last_detection_time": now,
+                "messages": existing.get("messages", [])
             }
         else:
             # Create new plate record
@@ -238,7 +253,8 @@ def save_plate_to_db(plate_number):
                 "last_detection_time": now,
                 "detection_count": 1,
                 "in_times": [now],  # First detection is in time
-                "out_times": []     # Empty out times initially
+                "out_times": [],     # Empty out times initially
+                "messages": []       # Initialize empty messages list
             })
             collection.insert_one(user_info)
         
@@ -246,6 +262,35 @@ def save_plate_to_db(plate_number):
     except Exception as e:
         st.error(f"❌ Database error: {e}")
         return None
+
+# === Function to save message to database ===
+def save_message_to_db(plate_number, message):
+    if collection is None:
+        return False
+    
+    try:
+        collection.update_one(
+            {"plate_number": plate_number},
+            {"$push": {"messages": message}}
+        )
+        return True
+    except Exception as e:
+        st.error(f"Failed to save message: {e}")
+        return False
+
+# === Function to get messages from database ===
+def get_messages_from_db(plate_number):
+    if collection is None:
+        return []
+    
+    try:
+        record = collection.find_one({"plate_number": plate_number})
+        if record:
+            return record.get("messages", [])
+        return []
+    except Exception as e:
+        st.error(f"Failed to get messages: {e}")
+        return []
 
 # === Image Processing ===
 def process_image(image_np):
@@ -387,44 +432,44 @@ uploaded_file = st.file_uploader(
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
+# === Check if a new file was uploaded ===
+file_changed = False
 if uploaded_file is not None:
-    # Clear previous session results
-    st.session_state.current_session_plates = []
-    st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
+    # Create a unique identifier for the uploaded file
+    file_id = f"{uploaded_file.name}_{uploaded_file.size}"
     
+    if st.session_state.last_uploaded_file != file_id:
+        file_changed = True
+        st.session_state.last_uploaded_file = file_id
+        st.session_state.file_processed = False
+        # Clear previous session results
+        st.session_state.current_session_plates = []
+        st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
+        st.session_state.processed_image = None
+        st.session_state.original_image = None
+        st.session_state.processed_video_path = None
+
+# === Process file only if it's new or not processed yet ===
+if uploaded_file is not None and (file_changed or not st.session_state.file_processed):
     file_type = uploaded_file.type
     
     if "image" in file_type:
         # === Image Processing ===
-        col1, col2 = st.columns([1, 1])
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image_np = cv2.imdecode(file_bytes, 1)
+        st.session_state.original_image = image_np.copy()
         
-        with col1:
-            st.subheader("📷 Original Image")
-            st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+        with st.spinner("🔄 Analyzing image..."):
+            processed_img, detected_plates = process_image(image_np)
         
-        with col2:
-            st.subheader("🔍 Processing Results")
-            
-            with st.spinner("🔄 Analyzing image..."):
-                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-                image_np = cv2.imdecode(file_bytes, 1)
-                processed_img, detected_plates = process_image(image_np)
-            
-            if detected_plates:
-                st.image(processed_img, caption="Detected Plates", channels="BGR", use_container_width=True)
-                st.success(f"✅ Found {len(detected_plates)} number plate(s)!")
-                
-                # Update session state
-                st.session_state.current_session_plates = detected_plates
-                st.session_state.session_stats['total_detections'] = len(detected_plates)
-                st.session_state.session_stats['unique_plates'] = len(set([p['plate'] for p in detected_plates]))
-            else:
-                st.warning("⚠️ No number plates detected in this image.")
+        st.session_state.processed_image = processed_img
+        st.session_state.current_session_plates = detected_plates
+        st.session_state.session_stats['total_detections'] = len(detected_plates)
+        st.session_state.session_stats['unique_plates'] = len(set([p['plate'] for p in detected_plates]))
+        st.session_state.file_processed = True
     
     elif "video" in file_type:
         # === Video Processing ===
-        st.subheader("🎥 Video Processing")
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_input:
             temp_input.write(uploaded_file.read())
             input_path = temp_input.name
@@ -434,22 +479,11 @@ if uploaded_file is not None:
         with st.spinner("🔄 Processing video... This may take a while."):
             detected_plates = process_video(input_path, output_path)
         
-        if detected_plates:
-            st.success(f"✅ Video processed! Found {len(detected_plates)} unique plates.")
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.video(output_path)
-            with col2:
-                st.metric("Total Detections", len(detected_plates))
-                st.metric("Processing Status", "Complete ✅")
-            
-            # Update session state - limit to first 5 for videos
-            st.session_state.current_session_plates = detected_plates[:5]
-            st.session_state.session_stats['total_detections'] = len(detected_plates)
-            st.session_state.session_stats['unique_plates'] = len(detected_plates)
-        else:
-            st.warning("⚠️ No number plates detected in this video.")
+        st.session_state.processed_video_path = output_path
+        st.session_state.current_session_plates = detected_plates[:5]  # Limit to first 5 for videos
+        st.session_state.session_stats['total_detections'] = len(detected_plates)
+        st.session_state.session_stats['unique_plates'] = len(detected_plates)
+        st.session_state.file_processed = True
         
         # Clean up temp file
         try:
@@ -457,27 +491,52 @@ if uploaded_file is not None:
         except:
             pass
 
+# === Display results if available ===
+if uploaded_file is not None and st.session_state.file_processed:
+    file_type = uploaded_file.type
+    
+    if "image" in file_type and st.session_state.original_image is not None:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.subheader("📷 Original Image")
+            st.image(st.session_state.original_image, caption="Uploaded Image", channels="BGR", use_container_width=True)
+        
+        with col2:
+            st.subheader("🔍 Processing Results")
+            if st.session_state.current_session_plates:
+                st.image(st.session_state.processed_image, caption="Detected Plates", channels="BGR", use_container_width=True)
+                st.success(f"✅ Found {len(st.session_state.current_session_plates)} number plate(s)!")
+            else:
+                st.warning("⚠️ No number plates detected in this image.")
+    
+    elif "video" in file_type and st.session_state.processed_video_path:
+        st.subheader("🎥 Video Processing")
+        
+        if st.session_state.current_session_plates:
+            st.success(f"✅ Video processed! Found {st.session_state.session_stats['total_detections']} unique plates.")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.video(st.session_state.processed_video_path)
+            with col2:
+                st.metric("Total Detections", st.session_state.session_stats['total_detections'])
+                st.metric("Processing Status", "Complete ✅")
+        else:
+            st.warning("⚠️ No number plates detected in this video.")
+
 # === Display Current Session Results ===
 if st.session_state.current_session_plates:
     st.markdown("---")
     st.subheader("📋 Current Session Results")
     
-    # Display stats in sidebar
-    with st.sidebar:
-        st.metric("Total Detections", st.session_state.session_stats['total_detections'])
-        st.metric("Unique Plates", st.session_state.session_stats['unique_plates'])
-    
-    # Display detected plates with time tracking
+    # Display detected plates with time tracking and messaging
     for idx, plate_data in enumerate(st.session_state.current_session_plates, 1):
         plate = plate_data['plate']
         plate_info = plate_data['user_info']
         in_times = plate_info.get('in_times', [])
         out_times = plate_info.get('out_times', [])
         detection_count = plate_info.get('detection_count', 1)
-
-        # Messages list (existing or empty)
-        messages = plate_info.get('messages', [])
-        message_input_key = f"message_input_{plate}"
 
         in_times_str = "<br>".join([f"📥 {time}" for time in in_times]) if in_times else "No in times recorded"
         out_times_str = "<br>".join([f"📤 {time}" for time in out_times]) if out_times else "No out times recorded"
@@ -508,28 +567,94 @@ if st.session_state.current_session_plates:
         </div>
         """, unsafe_allow_html=True)
 
-        # 💬 Message input UI
-        with st.expander(f"💬 Leave a message for plate {plate}"):
-            st.write("Previous Messages:")
-            for msg in messages:
-                st.markdown(f"- {msg}")
-
-            new_msg = st.text_input("Type your message and press Enter", key=message_input_key)
-            if new_msg:
-                # Append to MongoDB
-                try:
-                    collection.update_one(
-                        {"plate_number": plate},
-                        {"$push": {"messages": new_msg}}
-                    )
-                    st.success("Message saved!")
-                    # Update local session for real-time display
-                    plate_data['user_info'].setdefault('messages', []).append(new_msg)
-                except Exception as e:
-                    st.error(f"Failed to save message: {e}")
-
-
-# === Footer ===
+        # 💬 Message section with simple popup notification
+        with st.expander(f"💬 Messages for plate {plate}"):
+            # Get fresh messages from database
+            messages = get_messages_from_db(plate)
+            
+            if messages:
+                st.write("**Previous Messages:**")
+                for i, msg in enumerate(messages, 1):
+                    st.markdown(f"{i}. {msg}")
+            else:
+                st.write("No messages yet.")
+            
+            # Message input form to prevent rerun on Enter
+            with st.form(key=f"message_form_{plate}"):
+                new_msg = st.text_input("Type your message:", key=f"msg_input_{plate}")
+                submit_button = st.form_submit_button("Send Message")
+                
+                if submit_button and new_msg.strip():
+                    if save_message_to_db(plate, new_msg.strip()):
+                        # Create a popup modal overlay
+                        st.markdown("""
+                        <div id="successPopup" style="
+                            position: fixed;
+                            top: 0;
+                            left: 0;
+                            width: 100%;
+                            height: 100%;
+                            background: rgba(0, 0, 0, 0.5);
+                            z-index: 9999;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                        ">
+                            <div style="
+                                background: white;
+                                padding: 30px 40px;
+                                border-radius: 15px;
+                                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+                                text-align: center;
+                                max-width: 400px;
+                                width: 90%;
+                            ">
+                                <div style="
+                                    font-size: 48px;
+                                    color: #28a745;
+                                    margin-bottom: 15px;
+                                ">✅</div>
+                                <h3 style="
+                                    color: #333;
+                                    margin: 0 0 10px 0;
+                                    font-size: 24px;
+                                ">Success!</h3>
+                                <p style="
+                                    color: #666;
+                                    margin: 0 0 20px 0;
+                                    font-size: 16px;
+                                ">Message saved successfully!</p>
+                                <button onclick="document.getElementById('successPopup').style.display='none'" style="
+                                    background: #28a745;
+                                    color: white;
+                                    border: none;
+                                    padding: 10px 25px;
+                                    border-radius: 8px;
+                                    cursor: pointer;
+                                    font-size: 16px;
+                                    font-weight: bold;
+                                ">OK</button>
+                            </div>
+                        </div>
+                        
+                        <script>
+                            // Auto close popup after 3 seconds
+                            setTimeout(function() {
+                                var popup = document.getElementById('successPopup');
+                                if (popup) {
+                                    popup.style.display = 'none';
+                                }
+                            }, 3000);
+                        </script>
+                        """, unsafe_allow_html=True)
+                        
+                        # Brief delay before rerun to show the popup
+                        import time
+                        time.sleep(0.5)
+                        st.rerun()  # Only rerun to refresh messages, not reprocess file
+                    else:
+                        st.error("❌ Failed to save message")
+                        st.warning("⚠️ Please check your database connection and try again.")# === Footer ===
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 20px;">
