@@ -1,3 +1,5 @@
+
+
 import streamlit as st
 import cv2
 import tempfile
@@ -13,18 +15,6 @@ import json
 import random
 import joblib
 import pickle
-import threading
-import time
-
-# Try to import streamlit-webrtc for camera functionality
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-    import av
-    WEBRTC_AVAILABLE = True
-except ImportError:
-    WEBRTC_AVAILABLE = False
-    st.warning("⚠️ streamlit-webrtc not installed. Camera features will be limited.")
-    st.info("💡 Install with: `pip install streamlit-webrtc`")
 
 # === Streamlit UI Configuration ===
 st.set_page_config(
@@ -156,15 +146,6 @@ st.markdown("""
         font-size: 12px;
         text-align: center;
     }
-    .webrtc-success {
-        background: linear-gradient(135deg, #4ECDC4 0%, #44A08D 100%);
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-        color: white;
-        text-align: center;
-        font-weight: bold;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -189,22 +170,6 @@ if 'processed_video_path' not in st.session_state:
     st.session_state.processed_video_path = None
 if 'detection_stats' not in st.session_state:
     st.session_state.detection_stats = {'total_attempts': 0, 'successful_extractions': 0, 'low_confidence_rejections': 0}
-if 'camera_active' not in st.session_state:
-    st.session_state.camera_active = False
-if 'camera_detection_mode' not in st.session_state:
-    st.session_state.camera_detection_mode = False
-if 'captured_frame' not in st.session_state:
-    st.session_state.captured_frame = None
-if 'camera_plates' not in st.session_state:
-    st.session_state.camera_plates = []
-if 'webrtc_plates' not in st.session_state:
-    st.session_state.webrtc_plates = []
-if 'plate_lock' not in st.session_state:
-    st.session_state.plate_lock = threading.Lock()
-if 'last_detection_time' not in st.session_state:
-    st.session_state.last_detection_time = {}
-if 'detection_cooldown' not in st.session_state:
-    st.session_state.detection_cooldown = 3.0  # 3 second cooldown
 
 # === Sidebar Configuration ===
 with st.sidebar:
@@ -219,31 +184,19 @@ with st.sidebar:
     ocr_confidence = st.slider("OCR Text Confidence", min_value=0.1, max_value=1.0, value=0.75, step=0.05, 
                               help="Minimum confidence for OCR text extraction (75% recommended)")
     
-    # Camera settings
-    st.markdown("---")
-    st.header("📹 Camera Settings")
-    detection_interval = st.slider("Detection Interval (seconds)", min_value=1, max_value=10, value=3,
-                                  help="How often to detect plates during live camera feed")
-    
     st.markdown("---")
     st.header("📊 Session Stats")
     
-    # Display current session stats with safe access
-    try:
-        total_detections = len(getattr(st.session_state, 'current_session_plates', []))
-        unique_plates = len(set([p['plate'] for p in getattr(st.session_state, 'current_session_plates', [])]))
-        st.metric("Total Detections", total_detections)
-        st.metric("Unique Plates", unique_plates)
-    except (AttributeError, KeyError):
-        st.metric("Total Detections", 0)
-        st.metric("Unique Plates", 0)
+    # Display current session stats
+    st.metric("Total Detections", st.session_state.session_stats['total_detections'])
+    st.metric("Unique Plates", st.session_state.session_stats['unique_plates'])
     
     # Detection quality stats
-    detection_stats = getattr(st.session_state, 'detection_stats', {'total_attempts': 0, 'successful_extractions': 0, 'low_confidence_rejections': 0})
-    if detection_stats['total_attempts'] > 0:
-        success_rate = (detection_stats['successful_extractions'] / detection_stats['total_attempts']) * 100
+    if st.session_state.detection_stats['total_attempts'] > 0:
+        success_rate = (st.session_state.detection_stats['successful_extractions'] / 
+                       st.session_state.detection_stats['total_attempts']) * 100
         st.metric("Success Rate", f"{success_rate:.1f}%")
-        st.metric("Low Confidence Rejected", detection_stats['low_confidence_rejections'])
+        st.metric("Low Confidence Rejected", st.session_state.detection_stats['low_confidence_rejections'])
 
 # === MongoDB Setup ===
 @st.cache_resource
@@ -308,8 +261,7 @@ def extract_valid_text(text_list, confidence_threshold=0.75):
         
         # Skip if confidence is below threshold
         if confidence < confidence_threshold:
-            if hasattr(st.session_state, 'detection_stats'):
-                st.session_state.detection_stats['low_confidence_rejections'] += 1
+            st.session_state.detection_stats['low_confidence_rejections'] += 1
             continue
         
         # Clean the text: remove special characters, keep only alphanumeric
@@ -344,8 +296,7 @@ def extract_valid_text(text_list, confidence_threshold=0.75):
     # Sort by confidence and return the best one
     if valid_texts:
         valid_texts.sort(key=lambda x: x['confidence'], reverse=True)
-        if hasattr(st.session_state, 'detection_stats'):
-            st.session_state.detection_stats['successful_extractions'] += 1
+        st.session_state.detection_stats['successful_extractions'] += 1
         return [valid_texts[0]['text']]  # Return only the highest confidence result
     
     return []
@@ -698,8 +649,7 @@ def process_image(image_np):
             
             for box, detection_conf in zip(boxes, confidences):
                 # Increment total attempts
-                if hasattr(st.session_state, 'detection_stats'):
-                    st.session_state.detection_stats['total_attempts'] += 1
+                st.session_state.detection_stats['total_attempts'] += 1
                 
                 x1, y1, x2, y2 = map(int, box)
                 roi = image_np[y1:y2, x1:x2]
@@ -770,9 +720,8 @@ def process_image(image_np):
     
     return image_np, detected_plates
 
-# === Video Processing Function ===
+# === Improved Video Processing with Enhanced Confidence Filtering ===
 def process_video(input_path, output_path):
-    """Process video file for plate detection"""
     if model is None or ocr_reader is None:
         st.error("Models not loaded properly!")
         return []
@@ -804,15 +753,14 @@ def process_video(input_path, output_path):
         
         # Process every 30th frame to speed up
         if frame_count % 30 == 0:
-            results = model(frame, conf=yolo_confidence, verbose=False)
+            results = model(frame, conf=yolo_confidence)
             for result in results:
                 if result.boxes is not None:
                     boxes = result.boxes.xyxy.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
                     
                     for box, detection_conf in zip(boxes, confidences):
-                        if hasattr(st.session_state, 'detection_stats'):
-                            st.session_state.detection_stats['total_attempts'] += 1
+                        st.session_state.detection_stats['total_attempts'] += 1
                         
                         x1, y1, x2, y2 = map(int, box)
                         roi = frame[y1:y2, x1:x2]
@@ -873,7 +821,7 @@ def process_video(input_path, output_path):
                                 continue  # Skip this detection on error
         
         # Draw rectangles for all detections in current frame
-        results = model(frame, conf=yolo_confidence, verbose=False)
+        results = model(frame, conf=yolo_confidence)
         for result in results:
             if result.boxes is not None:
                 boxes = result.boxes.xyxy.cpu().numpy()
@@ -903,393 +851,61 @@ def process_video(input_path, output_path):
     
     return detected_plates
 
-# === WebRTC Video Processor ===
-if WEBRTC_AVAILABLE:
-    class PlateDetector:
-        def __init__(self):
-            self.frame_count = 0
-            self.last_detections = {}  # Store last detection times
-            self.detection_buffer = {}  # Store detection boxes for display
-            
-        def recv(self, frame):
-            """Process frames with proper saving and anti-blinking"""
-            try:
-                # Convert frame to numpy array
-                img = frame.to_ndarray(format="bgr24")
-                
-                # Simple frame counter
-                self.frame_count += 1
-                
-                # Process every 30th frame for detection
-                if self.frame_count % 30 == 0:
-                    img = self.process_frame(img)
-                else:
-                    # Show persistent detection boxes from buffer
-                    img = self.show_persistent_detections(img)
-                
-                return av.VideoFrame.from_ndarray(img, format="bgr24")
-            
-            except Exception as e:
-                # Return original frame on any error
-                return frame
-        
-        def show_persistent_detections(self, image):
-            """Show detection boxes from buffer to reduce blinking"""
-            try:
-                current_time = time.time()
-                
-                # Draw boxes from buffer (show for 3 seconds)
-                for plate_text, detection_info in self.detection_buffer.items():
-                    if current_time - detection_info['timestamp'] < 3.0:
-                        x1, y1, x2, y2 = detection_info['box']
-                        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(image, plate_text, (x1, y1-10), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        cv2.putText(image, f"{detection_info['confidence']:.2f}", (x1, y2+20), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                
-                # Add frame counter
-                cv2.putText(image, f"Frame: {self.frame_count}", (10, 30), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                
-                # Add saved plates counter
-                saved_plates = len(getattr(st.session_state, 'simple_plates', []))
-                cv2.putText(image, f"Saved Plates: {saved_plates}", (10, 60), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                
-                return image
-            
-            except Exception as e:
-                return image
-        
-        def process_frame(self, image):
-            """Process frame for plate detection with proper saving"""
-            try:
-                if not model or not ocr_reader:
-                    cv2.putText(image, "Models not loaded", (10, 90), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                    return image
-                
-                # Add processing indicator
-                cv2.putText(image, "PROCESSING...", (10, 90), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-                
-                # YOLO detection
-                results = model(image, conf=0.3, verbose=False)
-                
-                current_time = time.time()
-                plates_found_this_frame = 0
-                
-                for result in results:
-                    if result.boxes is not None:
-                        boxes = result.boxes.xyxy.cpu().numpy()
-                        confidences = result.boxes.conf.cpu().numpy()
-                        
-                        for box, conf in zip(boxes, confidences):
-                            x1, y1, x2, y2 = map(int, box)
-                            
-                            # Draw detection box immediately
-                            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(image, f"YOLO: {conf:.2f}", (x1, y1-10), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            
-                            # Extract ROI
-                            roi = image[y1:y2, x1:x2]
-                            if roi.size > 0:
-                                try:
-                                    # OCR processing
-                                    ocr_results = ocr_reader.readtext(roi)
-                                    
-                                    if ocr_results:
-                                        # Get best OCR result
-                                        best_result = max(ocr_results, key=lambda x: x[2] if len(x) > 2 else 0)
-                                        text = best_result[1] if len(best_result) > 1 else ""
-                                        ocr_confidence = best_result[2] if len(best_result) > 2 else 0
-                                        
-                                        # Clean text
-                                        cleaned_text = re.sub(r'[^A-Za-z0-9]', '', text).upper()
-                                        
-                                        # Validate plate
-                                        if len(cleaned_text) >= 3 and len(cleaned_text) <= 10 and ocr_confidence > 0.5:
-                                            plates_found_this_frame += 1
-                                            
-                                            # Add to detection buffer for persistent display
-                                            self.detection_buffer[cleaned_text] = {
-                                                'box': (x1, y1, x2, y2),
-                                                'confidence': ocr_confidence,
-                                                'timestamp': current_time
-                                            }
-                                            
-                                            # Draw text on image
-                                            cv2.putText(image, cleaned_text, (x1, y1-30), 
-                                                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                                            
-                                            # Check if we should save this plate (avoid spam)
-                                            should_save = False
-                                            if cleaned_text not in self.last_detections:
-                                                should_save = True
-                                            elif current_time - self.last_detections[cleaned_text] > 5.0:  # 5 second cooldown
-                                                should_save = True
-                                            
-                                            if should_save:
-                                                self.last_detections[cleaned_text] = current_time
-                                                
-                                                # Save to session state
-                                                self.save_plate_to_session(cleaned_text, ocr_confidence, current_time)
-                                                
-                                                # Also try to save to database
-                                                try:
-                                                    save_plate_to_db(cleaned_text, ocr_confidence)
-                                                except Exception as db_error:
-                                                    print(f"Database save error: {db_error}")
-                                        
-                                        else:
-                                            # Show low confidence detection
-                                            cv2.putText(image, f"Low Conf: {ocr_confidence:.2f}", (x1, y1-30), 
-                                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
-                                        
-                                except Exception as ocr_error:
-                                    # Show OCR error
-                                    cv2.putText(image, "OCR Error", (x1, y2+20), 
-                                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-                
-                # Clean old detections from buffer
-                self.detection_buffer = {
-                    plate: info for plate, info in self.detection_buffer.items()
-                    if current_time - info['timestamp'] < 3.0
-                }
-                
-                # Add status overlay
-                saved_plates = len(getattr(st.session_state, 'simple_plates', []))
-                cv2.putText(image, f"Frame: {self.frame_count}", (10, 30), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(image, f"Saved Plates: {saved_plates}", (10, 60), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                cv2.putText(image, f"This Frame: {plates_found_this_frame}", (10, 120), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                
-                return image
-                
-            except Exception as e:
-                # Show error on frame
-                cv2.putText(image, f"Error: {str(e)[:20]}", (10, 90), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                return image
-        
-        def save_plate_to_session(self, plate_text, confidence, timestamp):
-            """Save plate to session state safely"""
-            try:
-                # Initialize session state if needed
-                if not hasattr(st.session_state, 'simple_plates'):
-                    st.session_state.simple_plates = []
-                
-                # Check if plate already exists
-                existing_plates = [p.get('plate', '') for p in st.session_state.simple_plates]
-                if plate_text not in existing_plates:
-                    # Create plate data
-                    plate_data = {
-                        'plate': plate_text,
-                        'confidence': confidence,
-                        'timestamp': datetime.now().strftime("%H:%M:%S"),
-                        'detection_time': timestamp
-                    }
-                    
-                    # Add to session state
-                    st.session_state.simple_plates.append(plate_data)
-                    
-                    # Update current session plates for display
-                    if not hasattr(st.session_state, 'current_session_plates'):
-                        st.session_state.current_session_plates = []
-                    
-                    # Create compatible format for existing display code
-                    compatible_plate = {
-                        'plate': plate_text,
-                        'yolo_confidence': 0.5,  # Default value
-                        'ocr_confidence': confidence,
-                        'user_info': {
-                            'owner_name': 'WebRTC User',
-                            'phone': 'N/A',
-                            'bank_card': 'N/A',
-                            'payment_method': 'N/A',
-                            'fuel_cost': 'N/A',
-                            'loyalty_card': False,
-                            'detection_count': 1,
-                            'in_times': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-                            'out_times': [],
-                            'last_detection_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'messages': [],
-                            'auto_feedback': None,
-                            'feedback_generated': False,
-                            'satisfaction_prediction': None,
-                            'discount_info': None,
-                            'confidence_score': confidence
-                        }
-                    }
-                    
-                    # Add to current session plates
-                    st.session_state.current_session_plates.append(compatible_plate)
-                    
-                    # Update session stats
-                    st.session_state.session_stats = {
-                        'total_detections': len(st.session_state.simple_plates),
-                        'unique_plates': len(st.session_state.simple_plates)
-                    }
-                    
-                    print(f"✅ Saved plate: {plate_text} with confidence {confidence:.2f}")
-                    
-            except Exception as e:
-                print(f"❌ Error saving plate to session: {e}")
-                # Create minimal session state
-                try:
-                    st.session_state.simple_plates = [{
-                        'plate': plate_text,
-                        'confidence': confidence,
-                        'timestamp': datetime.now().strftime("%H:%M:%S")
-                    }]
-                except:
-                    pass
-
 # === Main Upload Section ===
 st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-
-# Create columns for different input options
-if WEBRTC_AVAILABLE:
-    col1, col2 = st.columns([1, 1])
-else:
-    col1, col2 = st.columns([2, 1])
-
-with col1:
-    uploaded_file = st.file_uploader(
-        "📁 Upload Image/Video", 
-        type=["jpg", "jpeg", "png", "mp4", "avi", "mov"],
-        help="Supported: JPG, PNG, MP4, AVI, MOV"
-    )
-
-with col2:
-    if WEBRTC_AVAILABLE:
-        st.markdown("### 📹 Live Camera (WebRTC)")
-        
-        # WebRTC configuration for better connectivity
-        RTC_CONFIGURATION = RTCConfiguration(
-            {
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {
-                        "urls": ["turn:relay.metered.ca:80", "turn:relay.metered.ca:443"],
-                        "username": "openai",
-                        "credential": "openai"
-                    }
-                ]
-            }
-        )
-        
-        # Create WebRTC streamer with simplified settings
-        webrtc_ctx = webrtc_streamer(
-            key="simple-plate-detector",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=PlateDetector,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=False,  # Changed to False for stability
-        )
-        
-        # Store webrtc context in session state for auto-refresh
-        st.session_state.webrtc_ctx = webrtc_ctx
-        
-        # Display WebRTC status and tips
-        if webrtc_ctx.state.playing:
-            st.markdown('<div class="webrtc-success">📹 CAMERA ACTIVE - Processing frames!</div>', unsafe_allow_html=True)
-            st.info("💡 **Simple Detection Mode:**\n"
-                   "• Processing every 30th frame\n"
-                   "• Lower YOLO confidence (0.3) for testing\n"
-                   "• Simplified OCR processing\n"
-                   "• Real-time frame counter visible")
-        else:
-            st.info("📹 Click 'START' to activate camera")
-            st.warning("⚠️ **Simplified WebRTC Mode:**\n"
-                      "• Basic frame processing\n"
-                      "• Reduced complexity for stability\n"
-                      "• Real-time feedback on video\n"
-                      "• You should see frame numbers")
-        
-        # Show simple detection stats
-        simple_plates = getattr(st.session_state, 'simple_plates', [])
-        if simple_plates:
-            st.success(f"🎯 **Detection Success!** Found {len(simple_plates)} plates")
-            
-            # Show detected plates in a simple format
-            plates_text = [p['plate'] for p in simple_plates[-3:]]  # Last 3 plates
-            st.info(f"🔍 **Recent:** {', '.join(plates_text)}")
-            
-            # Show simple results
-            with st.expander("📋 Simple Detection Results"):
-                for i, plate in enumerate(simple_plates, 1):
-                    st.write(f"**{i}.** {plate['plate']} (Confidence: {plate['confidence']:.2f}) - {plate['timestamp']}")
-        else:
-            st.info("🔍 No plates detected yet")
-            st.markdown("**Debug Info:**")
-            st.write("• Camera should show 'Frame: X' counter")
-            st.write("• Every 30th frame shows 'PROCESSING...'")
-            st.write("• Green boxes appear for YOLO detections")
-            st.write("• Text appears above boxes for successful OCR")
-        
-        # Simple clear button
-        if st.button("🗑️ Clear Simple Results", key="clear_simple_results"):
-            st.session_state.simple_plates = []
-            st.success("Simple results cleared!")
-            st.rerun()
-    else:
-        st.markdown("### 📹 Camera Not Available")
-        st.error("streamlit-webrtc not installed")
-        st.info("Install with: `pip install streamlit-webrtc`")
-
+uploaded_file = st.file_uploader(
+    "📁 Choose an Image or Video File", 
+    type=["jpg", "jpeg", "png", "mp4", "avi", "mov"],
+    help="Supported formats: JPG, JPEG, PNG for images | MP4, AVI, MOV for videos"
+)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# === Process uploaded file ===
+# === Check if a new file was uploaded ===
+file_changed = False
 if uploaded_file is not None:
+    # Create a unique identifier for the uploaded file
+    file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+    
+    if st.session_state.last_uploaded_file != file_id:
+        file_changed = True
+        st.session_state.last_uploaded_file = file_id
+        st.session_state.file_processed = False
+        # Clear previous session results
+        st.session_state.current_session_plates = []
+        st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
+        st.session_state.processed_image = None
+        st.session_state.original_image = None
+        st.session_state.processed_video_path = None
+        # Reset detection stats for new file
+        st.session_state.detection_stats = {'total_attempts': 0, 'successful_extractions': 0, 'low_confidence_rejections': 0}
+
+# === Process file only if it's new or not processed yet ===
+if uploaded_file is not None and (file_changed or not st.session_state.file_processed):
     file_type = uploaded_file.type
     
     if "image" in file_type:
         # === Image Processing ===
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         image_np = cv2.imdecode(file_bytes, 1)
+        st.session_state.original_image = image_np.copy()
         
-        with st.spinner("🔄 Analyzing image..."):
+        with st.spinner("🔄 Analyzing image with enhanced confidence filtering..."):
             processed_img, detected_plates = process_image(image_np)
         
-        if detected_plates:
-            st.session_state.current_session_plates = detected_plates
-            st.session_state.session_stats['total_detections'] = len(detected_plates)
-            st.session_state.session_stats['unique_plates'] = len(set([p['plate'] for p in detected_plates]))
+        st.session_state.processed_image = processed_img
+        st.session_state.current_session_plates = detected_plates
+        st.session_state.session_stats['total_detections'] = len(detected_plates)
+        st.session_state.session_stats['unique_plates'] = len(set([p['plate'] for p in detected_plates]))
+        st.session_state.file_processed = True
         
-        # Display results
-        st.markdown("---")
-        st.subheader("📊 Image Processing Results")
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.subheader("📷 Original Image")
-            st.image(image_np, caption="Uploaded Image", channels="BGR", use_container_width=True)
-        
-        with col2:
-            st.subheader("🔍 Detection Results")
-            st.image(processed_img, caption="Processed Image", channels="BGR", use_container_width=True)
-            
-            if detected_plates:
-                st.success(f"✅ Found {len(detected_plates)} valid number plate(s)!")
-            else:
-                st.warning("⚠️ No number plates detected.")
-                
-        # Display detection stats
-        detection_stats = getattr(st.session_state, 'detection_stats', {})
-        if detection_stats.get('total_attempts', 0) > 0:
+        # Display confidence filtering results
+        if st.session_state.detection_stats['total_attempts'] > 0:
             st.markdown(f"""
             <div class="confidence-info">
                 📊 <strong>Detection Quality Report:</strong><br>
-                Total Attempts: {detection_stats.get('total_attempts', 0)} | 
-                Successful: {detection_stats.get('successful_extractions', 0)} | 
-                Rejected (Low Confidence): {detection_stats.get('low_confidence_rejections', 0)}
+                Total Attempts: {st.session_state.detection_stats['total_attempts']} | 
+                Successful: {st.session_state.detection_stats['successful_extractions']} | 
+                Rejected (Low Confidence): {st.session_state.detection_stats['low_confidence_rejections']}
             </div>
             """, unsafe_allow_html=True)
     
@@ -1301,40 +917,23 @@ if uploaded_file is not None:
         
         output_path = "processed_video.mp4"
         
-        with st.spinner("🔄 Processing video... This may take a while."):
+        with st.spinner("🔄 Processing video with enhanced confidence filtering... This may take a while."):
             detected_plates = process_video(input_path, output_path)
         
-        if detected_plates:
-            st.session_state.current_session_plates = detected_plates[:10]  # Limit to first 10
-            st.session_state.session_stats['total_detections'] = len(detected_plates)
-            st.session_state.session_stats['unique_plates'] = len(detected_plates)
+        st.session_state.processed_video_path = output_path
+        st.session_state.current_session_plates = detected_plates[:10]  # Limit to first 10 for videos
+        st.session_state.session_stats['total_detections'] = len(detected_plates)
+        st.session_state.session_stats['unique_plates'] = len(detected_plates)
+        st.session_state.file_processed = True
         
-        # Display video results
-        st.markdown("---")
-        st.subheader("🎥 Video Processing Results")
-        
-        if detected_plates:
-            st.success(f"✅ Video processed! Found {len(detected_plates)} plates above {ocr_confidence*100:.0f}% confidence.")
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.video(output_path)
-            with col2:
-                st.metric("Valid Detections", len(detected_plates))
-                st.metric("Confidence Threshold", f"{ocr_confidence*100:.0f}%")
-                st.metric("Processing Status", "Complete ✅")
-        else:
-            st.warning(f"⚠️ No number plates detected above {ocr_confidence*100:.0f}% confidence threshold.")
-            
-        # Display video detection stats
-        detection_stats = getattr(st.session_state, 'detection_stats', {})
-        if detection_stats.get('total_attempts', 0) > 0:
+        # Display confidence filtering results for video
+        if st.session_state.detection_stats['total_attempts'] > 0:
             st.markdown(f"""
             <div class="confidence-info">
                 📊 <strong>Video Detection Quality Report:</strong><br>
-                Total Attempts: {detection_stats.get('total_attempts', 0)} | 
-                Successful: {detection_stats.get('successful_extractions', 0)} | 
-                Rejected (Low Confidence): {detection_stats.get('low_confidence_rejections', 0)}
+                Total Attempts: {st.session_state.detection_stats['total_attempts']} | 
+                Successful: {st.session_state.detection_stats['successful_extractions']} | 
+                Rejected (Low Confidence): {st.session_state.detection_stats['low_confidence_rejections']}
             </div>
             """, unsafe_allow_html=True)
         
@@ -1344,22 +943,52 @@ if uploaded_file is not None:
         except:
             pass
 
+# === Display results if available ===
+if uploaded_file is not None and st.session_state.file_processed:
+    file_type = uploaded_file.type
+    
+    if "image" in file_type and st.session_state.original_image is not None:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.subheader("📷 Original Image")
+            st.image(st.session_state.original_image, caption="Uploaded Image", channels="BGR", use_container_width=True)
+        
+        with col2:
+            st.subheader("🔍 Processing Results")
+            if st.session_state.current_session_plates:
+                st.image(st.session_state.processed_image, caption="Detected Plates (Green=Valid, Red=Rejected)", channels="BGR", use_container_width=True)
+                st.success(f"✅ Found {len(st.session_state.current_session_plates)} valid number plate(s) above {ocr_confidence*100:.0f}% confidence!")
+            else:
+                st.warning(f"⚠️ No number plates detected above {ocr_confidence*100:.0f}% confidence threshold.")
+                if st.session_state.detection_stats['low_confidence_rejections'] > 0:
+                    st.info(f"ℹ️ {st.session_state.detection_stats['low_confidence_rejections']} plates were detected but rejected due to low confidence. Try lowering the OCR confidence threshold in the sidebar.")
+    
+    elif "video" in file_type and st.session_state.processed_video_path:
+        st.subheader("🎥 Video Processing")
+        
+        if st.session_state.current_session_plates:
+            st.success(f"✅ Video processed! Found {st.session_state.session_stats['total_detections']} plates above {ocr_confidence*100:.0f}% confidence.")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.video(st.session_state.processed_video_path)
+            with col2:
+                st.metric("Valid Detections", st.session_state.session_stats['total_detections'])
+                st.metric("Confidence Threshold", f"{ocr_confidence*100:.0f}%")
+                st.metric("Processing Status", "Complete ✅")
+        else:
+            st.warning(f"⚠️ No number plates detected above {ocr_confidence*100:.0f}% confidence threshold.")
+            if st.session_state.detection_stats['low_confidence_rejections'] > 0:
+                st.info(f"ℹ️ {st.session_state.detection_stats['low_confidence_rejections']} plates were detected but rejected due to low confidence.")
+
 # === Display Current Session Results ===
-current_plates = getattr(st.session_state, 'current_session_plates', [])
-if current_plates:
+if st.session_state.current_session_plates:
     st.markdown("---")
-    st.subheader("📋 Current Session Results")
+    st.subheader("📋 Current Session Results (High Confidence Only)")
     
-    # Clear results button
-    if st.button("🗑️ Clear All Results", key="clear_all_results"):
-        st.session_state.current_session_plates = []
-        st.session_state.webrtc_plates = []
-        st.session_state.session_stats = {'total_detections': 0, 'unique_plates': 0}
-        st.session_state.last_detection_time = {}
-        st.rerun()
-    
-    # Display detected plates
-    for idx, plate_data in enumerate(current_plates, 1):
+    # Display detected plates with confidence scores and enhanced information
+    for idx, plate_data in enumerate(st.session_state.current_session_plates, 1):
         plate = plate_data['plate']
         plate_info = plate_data['user_info']
         in_times = plate_info.get('in_times', [])
@@ -1498,13 +1127,9 @@ st.markdown(f"""
 <div style="text-align: center; color: #666; padding: 20px;">
     <p>🔒 Enhanced data with confidence filtering | 🤖 Powered by YOLO & EasyOCR | 🧠 Enhanced by Groq LLaMA</p>
     <p>🎯 <strong>Quality Control:</strong> OCR Confidence ≥ {ocr_confidence*100:.0f}% | YOLO Confidence ≥ {yolo_confidence*100:.0f}%</p>
-    <p>📹 <strong>WebRTC Camera:</strong> Anti-blinking system | Persistent detection boxes | 3-second cooldown</p>
     <p>⏰ <strong>Time Tracking:</strong> Even detections = IN times | Odd detections = OUT times</p>
     <p>🌟 <strong>Auto Feedback:</strong> Automatic welcome messages for new vehicles (detection count ≤ 2)</p>
     <p>🧠 <strong>AI Satisfaction:</strong> Churn prediction model analyzes fuel costs to predict customer satisfaction</p>
     <p>💰 <strong>Discount System:</strong> 5% off with loyalty card | 10% off on 10th visit</p>
 </div>
 """, unsafe_allow_html=True)
-
-
-
