@@ -984,51 +984,66 @@ def process_camera_frame(frame):
 # === Main Upload Section ===
 st.markdown('<div class="upload-section">', unsafe_allow_html=True)
 
-# Create three columns for input options
-col1, col2, col3 = st.columns([1, 1, 1])
+# Check if running locally or in cloud
+import os
+is_local = os.path.exists('/dev') or os.name == 'nt'  # Basic check for local environment
 
-with col1:
+if is_local:
+    # Local deployment - show camera option
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        uploaded_file = st.file_uploader(
+            "📁 Upload Image/Video", 
+            type=["jpg", "jpeg", "png", "mp4", "avi", "mov"],
+            help="Supported: JPG, PNG, MP4, AVI, MOV"
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("📹 Open Laptop Camera", key="open_laptop_camera", use_container_width=True):
+            # Initialize built-in laptop camera (Camera 0)
+            cap, message = initialize_camera(0)
+            if cap is not None:
+                st.session_state.camera_active = True
+                st.session_state.camera_cap = cap
+                st.session_state.camera_plates = []
+                st.session_state.camera_detection_mode = True
+                st.session_state.current_session_plates = []
+                st.session_state.captured_frame = None
+                st.session_state.processed_image = None
+                st.success(f"✅ Built-in laptop camera opened! Live detection started")
+                st.rerun()
+            else:
+                st.error(f"❌ Failed to open built-in laptop camera: {message}")
+                st.info("💡 Make sure no other app is using your camera and try again")
+    
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("⏹️ Close Camera", key="close_camera", use_container_width=True):
+            if 'camera_cap' in st.session_state:
+                st.session_state.camera_cap.release()
+                del st.session_state.camera_cap
+            st.session_state.camera_active = False
+            st.session_state.camera_detection_mode = False
+            st.info("📹 Built-in laptop camera closed")
+            st.rerun()
+
+else:
+    # Cloud deployment - only file upload
+    st.markdown("### 📁 File Upload (Cloud Version)")
+    st.info("📹 Camera features are only available when running locally. Use file upload for cloud deployment.")
+    
     uploaded_file = st.file_uploader(
-        "📁 Upload Image/Video", 
+        "📁 Choose an Image or Video File", 
         type=["jpg", "jpeg", "png", "mp4", "avi", "mov"],
-        help="Supported: JPG, PNG, MP4, AVI, MOV"
+        help="Supported formats: JPG, JPEG, PNG for images | MP4, AVI, MOV for videos"
     )
-
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True)  # Add some spacing
-    if st.button("📹 Open Laptop Camera", key="open_laptop_camera", use_container_width=True):
-        # Initialize built-in laptop camera (Camera 0)
-        cap, message = initialize_camera(0)  # Always use camera 0 (built-in laptop camera)
-        if cap is not None:
-            st.session_state.camera_active = True
-            st.session_state.camera_cap = cap
-            st.session_state.camera_plates = []
-            st.session_state.camera_detection_mode = True  # Start detection immediately
-            # Clear previous results
-            st.session_state.current_session_plates = []
-            st.session_state.captured_frame = None
-            st.session_state.processed_image = None
-            st.success(f"✅ Built-in laptop camera opened! Live detection started")
-            st.rerun()  # Refresh to show camera feed
-        else:
-            st.error(f"❌ Failed to open built-in laptop camera: {message}")
-            st.info("💡 Make sure no other app is using your camera and try again")
-
-with col3:
-    st.markdown("<br>", unsafe_allow_html=True)  # Add some spacing
-    if st.button("⏹️ Close Camera", key="close_camera", use_container_width=True):
-        if 'camera_cap' in st.session_state:
-            st.session_state.camera_cap.release()
-            del st.session_state.camera_cap
-        st.session_state.camera_active = False
-        st.session_state.camera_detection_mode = False
-        st.info("📹 Built-in laptop camera closed")
-        st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# === Live Camera Feed Display ===
-if st.session_state.camera_active and st.session_state.camera_detection_mode and 'camera_cap' in st.session_state:
+# === Live Camera Feed Display (Only for Local) ===
+if is_local and st.session_state.camera_active and st.session_state.camera_detection_mode and 'camera_cap' in st.session_state:
     st.markdown("---")
     st.markdown("### 🔴 LIVE LAPTOP CAMERA DETECTION")
     
@@ -1132,8 +1147,8 @@ if st.session_state.camera_active and st.session_state.camera_detection_mode and
         </div>
         """.format(len(st.session_state.camera_plates), detection_interval), unsafe_allow_html=True)
 
-# === Camera Resume Option ===
-elif st.session_state.camera_active and not st.session_state.camera_detection_mode:
+# === Camera Resume Option (Only for Local) ===
+elif is_local and st.session_state.camera_active and not st.session_state.camera_detection_mode:
     st.markdown("---")
     st.markdown("### 📹 Built-in Laptop Camera Ready")
     st.info("📹 Built-in camera is active but detection is paused")
@@ -1465,7 +1480,7 @@ st.markdown(f"""
 <div style="text-align: center; color: #666; padding: 20px;">
     <p>🔒 Enhanced data with confidence filtering | 🤖 Powered by YOLO & EasyOCR | 🧠 Enhanced by Groq LLaMA</p>
     <p>🎯 <strong>Quality Control:</strong> OCR Confidence ≥ {ocr_confidence*100:.0f}% | YOLO Confidence ≥ {yolo_confidence*100:.0f}%</p>
-    <p>📹 <strong>Built-in Laptop Camera:</strong> Single-click access to your laptop's integrated camera</p>
+    <p>📹 <strong>Camera Support:</strong> Available when running locally | Use file upload for cloud deployment</p>
     <p>⏰ <strong>Time Tracking:</strong> Even detections = IN times | Odd detections = OUT times</p>
     <p>🌟 <strong>Auto Feedback:</strong> Automatic welcome messages for new vehicles (detection count ≤ 2)</p>
     <p>🧠 <strong>AI Satisfaction:</strong> Churn prediction model analyzes fuel costs to predict customer satisfaction</p>
