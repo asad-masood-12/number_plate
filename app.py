@@ -1166,42 +1166,95 @@ with col1:
     )
 
 with col2:
-    if WEBRTC_AVAILABLE:
-        st.markdown("### 📹 Live Camera (WebRTC)")
+    st.markdown("### 📹 Camera Options")
+    
+    # Check if we should show WebRTC at all
+    show_webrtc = st.checkbox("🔬 Enable Experimental Camera (WebRTC)", value=False, 
+                             help="May not work on all networks. Use file upload as primary method.")
+    
+    if show_webrtc and WEBRTC_AVAILABLE:
+        st.warning("⚠️ **WebRTC is experimental and may not work on:**\n"
+                  "• Corporate networks\n"
+                  "• Public WiFi\n"
+                  "• Some mobile networks\n"
+                  "• Streamlit Cloud (networking restrictions)")
         
-        # WebRTC configuration for better connectivity
+        # WebRTC configuration with multiple STUN/TURN servers
         RTC_CONFIGURATION = RTCConfiguration({
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+                {"urls": ["stun:stun2.l.google.com:19302"]},
+                {"urls": ["stun:stun3.l.google.com:19302"]},
+                {"urls": ["stun:stun4.l.google.com:19302"]},
+                {"urls": ["stun:global.stun.twilio.com:3478"]},
+                {"urls": ["stun:stun.cloudflare.com:3478"]},
+            ],
+            "iceCandidatePoolSize": 20,
         })
         
-        # Create WebRTC streamer with simplified settings
-        webrtc_ctx = webrtc_streamer(
-            key="simple-plate-detector",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=PlateDetector,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=False,  # Changed to False for stability
-        )
+        # Create WebRTC streamer with enhanced error handling
+        try:
+            webrtc_ctx = webrtc_streamer(
+                key="simple-plate-detector",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIGURATION,
+                video_processor_factory=PlateDetector,
+                media_stream_constraints={
+                    "video": {
+                        "width": {"ideal": 640},
+                        "height": {"ideal": 480},
+                        "frameRate": {"ideal": 15}
+                    }, 
+                    "audio": False
+                },
+                async_processing=False,
+            )
+        except Exception as e:
+            st.error(f"WebRTC initialization failed: {e}")
+            webrtc_ctx = None
         
-        # Store webrtc context in session state for auto-refresh
-        st.session_state.webrtc_ctx = webrtc_ctx
-        
-        # Display WebRTC status and tips
-        if webrtc_ctx.state.playing:
+        # Display WebRTC status and troubleshooting
+        if webrtc_ctx and webrtc_ctx.state.playing:
             st.markdown('<div class="webrtc-success">📹 CAMERA ACTIVE - Processing frames!</div>', unsafe_allow_html=True)
             st.info("💡 **Simple Detection Mode:**\n"
                    "• Processing every 30th frame\n"
                    "• Lower YOLO confidence (0.3) for testing\n"
                    "• Simplified OCR processing\n"
                    "• Real-time frame counter visible")
-        else:
+        elif webrtc_ctx:
             st.info("📹 Click 'START' to activate camera")
-            st.warning("⚠️ **Simplified WebRTC Mode:**\n"
-                      "• Basic frame processing\n"
-                      "• Reduced complexity for stability\n"
-                      "• Real-time feedback on video\n"
-                      "• You should see frame numbers")
+            st.warning("⚠️ **If camera doesn't start:**\n"
+                      "• Allow camera permissions in browser\n"
+                      "• Try refreshing the page\n"
+                      "• Use Chrome/Firefox for best compatibility\n"
+                      "• Check if camera is used by another app")
+        else:
+            st.error("❌ **WebRTC Connection Failed**")
+            st.warning("🌐 **Network/Connection Issues:**\n"
+                      "• Corporate firewall blocking WebRTC\n"
+                      "• Public WiFi restrictions\n"
+                      "• Browser security settings\n"
+                      "• STUN/TURN server connectivity issues")
+            
+            st.info("🔧 **Troubleshooting Steps:**\n"
+                   "1. **Try different network** - Use mobile hotspot\n"
+                   "2. **Use different browser** - Try Chrome, Firefox, Edge\n"
+                   "3. **Clear browser cache** - Refresh permissions\n"
+                   "4. **Check firewall** - Disable temporarily to test\n"
+                   "5. **Use file upload** - Alternative method below")
+        
+        # Enhanced connection status
+        if webrtc_ctx:
+            connection_state = getattr(webrtc_ctx.state, 'ice_connection_state', 'unknown')
+            if connection_state != 'unknown':
+                if connection_state in ['connected', 'completed']:
+                    st.success(f"🌐 Connection Status: {connection_state.upper()}")
+                elif connection_state in ['connecting', 'checking']:
+                    st.warning(f"🔄 Connection Status: {connection_state.upper()}")
+                else:
+                    st.error(f"❌ Connection Status: {connection_state.upper()}")
+                    st.info("💡 **Try:** Refresh page, check network, or use file upload instead")
         
         # Show simple detection stats
         simple_plates = getattr(st.session_state, 'simple_plates', [])
@@ -1218,21 +1271,44 @@ with col2:
                     st.write(f"**{i}.** {plate['plate']} (Confidence: {plate['confidence']:.2f}) - {plate['timestamp']}")
         else:
             st.info("🔍 No plates detected yet")
-            st.markdown("**Debug Info:**")
-            st.write("• Camera should show 'Frame: X' counter")
-            st.write("• Every 30th frame shows 'PROCESSING...'")
-            st.write("• Green boxes appear for YOLO detections")
-            st.write("• Text appears above boxes for successful OCR")
+            if webrtc_ctx and webrtc_ctx.state.playing:
+                st.markdown("**Debug Info:**")
+                st.write("• Camera should show 'Frame: X' counter")
+                st.write("• Every 30th frame shows 'PROCESSING...'")
+                st.write("• Green boxes appear for YOLO detections")
+                st.write("• Text appears above boxes for successful OCR")
         
         # Simple clear button
         if st.button("🗑️ Clear Simple Results", key="clear_simple_results"):
             st.session_state.simple_plates = []
             st.success("Simple results cleared!")
             st.rerun()
+            
     else:
-        st.markdown("### 📹 Camera Not Available")
-        st.error("streamlit-webrtc not installed")
-        st.info("Install with: `pip install streamlit-webrtc`")
+        # Alternative: Camera Upload Simulation
+        st.markdown("### 📸 Alternative: Camera Image Capture")
+        st.info("💡 **Recommended Approach:**\n"
+               "• Take photo with your phone camera\n"
+               "• Upload the image using file upload below\n"
+               "• More reliable than WebRTC on cloud platforms")
+        
+        # Mobile-friendly instructions
+        st.markdown("""
+        <div style="background: #e8f4fd; padding: 15px; border-radius: 10px; margin: 10px 0;">
+            <h4>📱 Mobile Camera Instructions:</h4>
+            <ol>
+                <li><strong>Take a photo</strong> of the number plate with your phone</li>
+                <li><strong>Use the file upload</strong> section below</li>
+                <li><strong>Select the photo</strong> from your gallery</li>
+                <li><strong>Wait for processing</strong> - same detection quality!</li>
+            </ol>
+            <p><strong>✅ This method is 100% reliable and works everywhere!</strong></p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if not WEBRTC_AVAILABLE:
+            st.error("📹 streamlit-webrtc not installed")
+            st.info("Install with: `pip install streamlit-webrtc>=0.48.1`")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1496,8 +1572,3 @@ st.markdown(f"""
     <p>💰 <strong>Discount System:</strong> 5% off with loyalty card | 10% off on 10th visit</p>
 </div>
 """, unsafe_allow_html=True)
-
-
-
-
-
